@@ -4,9 +4,12 @@ Detalhamento dos repositórios, do contrato entre módulos e dos épicos de cada
 
 ## Repositórios (multi-repo)
 
-- **`vidi-patris-core`** — o **backend**: API (Python/FastAPI), orquestração do pipeline, integração com LLM de terceiros, motor de scoring, persistência. Continua guardando `docs/` com o plano geral (decisões cross-repo).
-- **`vidi-patris-video-engine`** (novo) — **C++**: decodificação de vídeo, STT local (whisper.cpp), scene detection, inferência de visão computacional (ONNX Runtime: NudeNet, detector de armas, checkpoint de violência). Exposto como binário CLI, sem servidor próprio em v0. **Restrição de design: sem acesso a rede/APIs externas** — todos os subcomandos operam 100% local, só leem/escrevem arquivo em disco.
-- **`vidi-patris-frontend`** (novo) — **React**: upload, acompanhamento de status, visualização de score e timeline de cenas.
+- **[`vidi-patris-docs`](https://github.com/lcaldoncelli/vidi-patris-docs)** — repositório dedicado à documentação de arquitetura e planejamento (este arquivo, o plano geral, o planejamento de épicos). Decisões cross-repo vivem aqui, não em nenhum dos repos de código.
+- **[`vidi-patris-core`](https://github.com/lcaldoncelli/vidi-patris-core)** — o **backend**: API (Python/FastAPI), orquestração do pipeline, integração com LLM de terceiros, motor de scoring, persistência.
+- **[`vidi-patris-video-engine`](https://github.com/lcaldoncelli/vidi-patris-video-engine)** — **C++**: decodificação de vídeo, STT local (whisper.cpp), scene detection, inferência de visão computacional (ONNX Runtime: NudeNet, detector de armas, checkpoint de violência). Exposto como binário CLI, sem servidor próprio em v0. **Restrição de design: sem acesso a rede/APIs externas** — todos os subcomandos operam 100% local, só leem/escrevem arquivo em disco.
+- **[`vidi-patris-frontend`](https://github.com/lcaldoncelli/vidi-patris-frontend)** — **React**: upload, acompanhamento de status, visualização de score e timeline de cenas.
+
+Os 4 repositórios já existem no GitHub (privados), com scaffolding mínimo de cada stack (FastAPI, CMake/C++, Vite+React+TS) — ainda sem lógica de negócio implementada.
 
 ## Contrato entre backend e video-engine (v0)
 

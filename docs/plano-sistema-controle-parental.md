@@ -68,7 +68,8 @@ O projeto está dividido em duas fases principais: uma **v0** enxuta, monolític
 
 ## Estrutura de Projeto
 
-O projeto é dividido em **3 repositórios** (multi-repo, não monorepo):
+O projeto é dividido em **4 repositórios** (multi-repo, não monorepo):
+- `vidi-patris-docs` — documentação de arquitetura e planejamento (este plano, estrutura de projeto, planejamento de épicos).
 - `vidi-patris-core` — **backend** (Python/FastAPI): orquestração do pipeline, integração com LLM, motor de scoring, persistência.
 - `vidi-patris-video-engine` — **C++**: STT local (whisper.cpp), scene detection, inferência de visão computacional (ONNX Runtime). Exposto como binário CLI, sem servidor próprio em v0.
 - `vidi-patris-frontend` — **React**: upload, acompanhamento de status, visualização de score e timeline de cenas.
