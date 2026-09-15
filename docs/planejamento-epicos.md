@@ -86,17 +86,65 @@ Cada passo é uma entrega independente e testável — não avançar para o pró
 
 > Pré-requisito: os 4 subcomandos do video-engine já validados isoladamente (seção 1).
 
-### 2.1 Ingestão de vídeo
-- [ ] Endpoint de upload, validação de formato/tamanho, storage local, criação de job
+### 2.1 Ingestão de conteúdo e análise de legendas (SRT)
+- [x] Arquivo de configuração (`.env`, prefixo `VIDI_`, ver `.env.example`) definindo a pasta de armazenamento dos assets em disco (`VIDI_STORAGE_DIR`) e o caminho do arquivo SQLite (`VIDI_DATABASE_PATH`)
+- [x] Modelo de dados: `Content` (agrupador lógico, ex. "Vingadores: Ultimato") contendo N `Asset`s (ex. `srt-pt`, `srt-en`, `video`, `snapshot`), cada asset com seu `content_id`
+- [x] Rota de upload (`POST /uploads`): recebe o arquivo e um `content_id` opcional
+  - `content_id` informado e existente → asset é associado ao `Content` já existente
+  - `content_id` ausente, ou informado mas ainda inexistente → um novo `Content` é criado (honrando o id informado pelo cliente, se houver) e retornado na resposta
+- [x] Validação de formato nesta primeira fase restrita a arquivos `.srt` (415 para os demais) — demais tipos de asset (vídeo, snapshot etc.) ficam previstos no modelo de dados, mas sem pipeline de análise implementado ainda
+- [x] Rota de disparo de análise (`POST /analysis/assets/{asset_id}`): cria um job de análise; nesta fase o pipeline processa apenas assets do tipo `.srt` (parsing/validação via `app/srt.py`, síncrono — sem fila ainda, item 2.8)
+- [x] Rota de obtenção de resultado (`GET /analysis/jobs/{job_id}`): retorna status/resultado da análise
+- [x] Persistência: arquivos de asset salvos na pasta definida no arquivo de configuração; metadados (content, asset, job) salvos no SQLite via SQLAlchemy, também no caminho definido no arquivo de configuração
+- [x] Nesta fase não há dependência do `vidi-patris-video-engine` — ele passa a ser necessário quando os demais tipos de asset (vídeo, snapshots) forem implementados
 
 **Cenários de teste:**
-- Upload de vídeo válido dentro do limite → job criado, resposta 2xx
-- Upload de arquivo não-vídeo (ex. `.txt` renomeado para `.mp4`) → rejeitado com 4xx
-- Upload acima do limite de tamanho → rejeitado com mensagem clara
-- Upload interrompido/incompleto → não deixa arquivo parcial "sujo" no storage
-- Uploads concorrentes → jobs isolados, sem cruzamento de dados
+- Upload de `.srt` válido sem `content_id` → novo `Content` criado, asset salvo na pasta configurada, resposta 2xx retorna o `content_id` gerado
+- Upload de `.srt` válido com `content_id` existente → asset associado ao `Content` existente, sem duplicar o `Content`, resposta 2xx
+- Upload com `content_id` inexistente → decisão tomada: cria novo `Content` usando esse id (mesmo comportamento de `content_id` ausente, só muda a origem do id)
+- Upload de arquivo que não é `.srt` → rejeitado com 415, mensagem indicando que só `.srt` é suportado nesta fase
+- Upload acima do limite de tamanho (`VIDI_MAX_UPLOAD_SIZE_BYTES`) → rejeitado com 413
+- Upload interrompido/incompleto → não deixa arquivo parcial "sujo" na pasta de armazenamento (escrita em `.part` temporário + rename atômico)
+- Uploads concorrentes para o mesmo `content_id` → assets isolados e corretamente associados, sem cruzamento/corrupção de dados
+- Disparo de análise para um asset `.srt` existente → job de análise criado, resposta 2xx, `status` `done` (ou `failed` com `error` se o `.srt` for inválido)
+- Disparo de análise para `asset_id` inexistente → 404; para asset de tipo ainda não suportado → 422
+- Disparo de análise repetido para o mesmo asset já processado → decisão tomada: idempotente, retorna o job já existente (não reprocessa)
+- Obtenção de resultado antes do job terminar → 202 (`status` `pending`/`running`)
+- Obtenção de resultado de job concluído → 200, retorna o resultado da análise do `.srt` (ou o erro, se `failed`)
+- Obtenção de resultado para `job_id` inexistente → 404
+- Arquivo de configuração ausente ou com pasta/caminho do SQLite inválidos → erro na inicialização do backend (`ensure_db_ready()` no `lifespan` do FastAPI), não falha silenciosa em runtime
+- Pasta de armazenamento definida na configuração não existe → decisão tomada: criada automaticamente (`mkdir(parents=True, exist_ok=True)`)
 
-### 2.2 Orquestração do pipeline
+> Implementado em [vidi-patris-core](https://github.com/lcaldoncelli/vidi-patris-core): `app/config.py`, `app/models.py`, `app/storage.py`, `app/srt.py`, `app/routers/uploads.py`, `app/routers/analysis.py`, com testes unitários/integração em `tests/`.
+
+### 2.2 Análise semântica de legendas (SRT) via LLM
+- [x] Camada de provedores de IA plugável (`app/llm/`): interface única + implementações para **Claude** (`anthropic`), **OpenAI** (`openai`) e **Gemini** (`google-genai`), escolhidas por `VIDI_LLM_PROVIDER`, com chave e modelo por provedor no `.env` (`VIDI_ANTHROPIC_API_KEY`, `VIDI_OPENAI_API_KEY`, `VIDI_GEMINI_API_KEY`, `VIDI_LLM_MODEL` opcional) — trocar de provedor é mudança de configuração, não de código, motivada por custo
+- [x] Validação na inicialização (`ensure_llm_ready()` no `lifespan`): o provedor selecionado precisa da chave presente, senão erro claro no startup — sem falha silenciosa em runtime
+- [x] Novo tipo de job: `AnalysisJob.job_type` (`srt_parse`, default, = comportamento atual do 2.1; `srt_semantic`, novo); idempotência passa a ser por (`asset_id`, `job_type`)
+- [x] Rota de disparo: `POST /analysis/assets/{asset_id}?job_type=srt_semantic` roda o pipeline: `parse_srt` → lotes de N segmentos (`VIDI_LLM_BATCH_SIZE`) → prompt de classificação → resposta estruturada (JSON validado por schema) → agregação
+- [x] Prompt e schema de saída: para cada diálogo sinalizado — `srt_index`, `start_ms`/`end_ms`, `text`, `categories` (`violencia` | `sexo_nudez` | `drogas` | `linguagem`), `severity` (`leve` | `moderada` | `intensa`), `rationale` curta; mais `summary_by_category` (contagem + severidade máxima por eixo) e `provider`/`model`/`segments_analyzed` no `result_json`
+- [x] Execução síncrona nesta fase (igual ao `srt_parse`); migra para background quando a fila do item 2.8 existir
+- [x] Erros do provedor (timeout, rate limit, JSON fora do schema) → `retry`/`backoff` limitado; esgotado → job `failed` com `error_message` legível, processo não cai
+- [x] `GET /analysis/jobs/{job_id}` devolve o `result_json` da análise semântica sem quebrar contrato (campo `result` genérico já desserializa; resposta ganha `job_type`)
+
+**Cenários de teste:**
+- SRT com trechos sensíveis conhecidos (violência/sexo/drogas/linguagem) → `flagged` traz os `srt_index` corretos, com `categories`/`severity` esperados (provedor mockado de forma determinística, nunca a API real)
+- SRT sem nada sensível → `flagged: []`, `summary_by_category` zerado, job `done`
+- SRT vazio, ou só com legendas não-verbais (`[música]`, `♪`) → LLM não é chamado, job `done` com resultado vazio
+- SRT maior que um lote → múltiplas chamadas ao provedor, resultados agregados sem `srt_index` duplicado
+- `VIDI_LLM_PROVIDER` alternado entre `claude`/`openai`/`gemini` → mesma forma de `result_json`; teste roda com os três clientes de SDK mockados
+- Provedor selecionado sem chave configurada → erro no startup (`ensure_llm_ready()`), não em runtime
+- Timeout / erro 5xx do provedor → retry/backoff aplicado; esgotado → job `failed` com motivo
+- Rate limit (free tier) atingido → tratado (backoff/limite de tentativas), job `failed` com mensagem clara, sem falha silenciosa
+- Resposta do provedor fora do schema (JSON malformado / campo faltando / `srt_index` fora do lote) → validação rejeita e loga, job `failed`, processo não cai
+- Disparo de `srt_semantic` para asset que não é `.srt` → 422; para `asset_id` inexistente → 404
+- Disparo repetido de `srt_semantic` no mesmo asset já processado → idempotente, retorna o job existente (não reprocessa nem gasta chamada de API)
+- `srt_parse` e `srt_semantic` no mesmo asset coexistem como dois jobs distintos
+- Obtenção de resultado de job `srt_semantic` concluído → 200 com `flagged` / `summary_by_category`
+
+> Implementado em [vidi-patris-core](https://github.com/lcaldoncelli/vidi-patris-core): `app/llm/`, `app/config.py`, `app/models.py`, `app/db.py`, `app/repositories/analysis_job_repository.py`, `app/services/analysis_service.py`, `app/routers/analysis.py`, `app/schemas.py`, `app/main.py`, com testes unitários/integração em `tests/`.
+
+### 2.3 Orquestração do pipeline
 - [ ] Invocação dos subcomandos do video-engine via subprocess, na sequência definida
 - [ ] Parsing dos JSONs de saída de cada etapa
 - [ ] Status granular do job por etapa
@@ -108,7 +156,7 @@ Cada passo é uma entrega independente e testável — não avançar para o pró
 - Binário `video-engine` ausente/não executável → erro tratado na inicialização do backend, não falha silenciosa em runtime
 - Retry de um job que falhou → idempotente, não duplica arquivos/artefatos em disco
 
-### 2.3 Integração com LLM de análise semântica
+### 2.4 Integração com LLM de análise semântica
 - [ ] Envio de segmentos da transcrição para a API de terceiros
 - [ ] Parsing da resposta estruturada (categoria/severidade/trecho/timestamp)
 
@@ -119,7 +167,7 @@ Cada passo é uma entrega independente e testável — não avançar para o pró
 - Rate limit do free tier atingido → tratado (fila/backoff), não falha silenciosa
 - Resposta fora do schema esperado (JSON malformado) → validação rejeita e loga, pipeline não quebra
 
-### 2.4 Motor de scoring
+### 2.5 Motor de scoring
 - [ ] Combinação de sinais de texto (LLM) + imagem (video-engine) por categoria
 - [ ] Aplicação do ruleset Brasil/Classind
 
@@ -130,7 +178,7 @@ Cada passo é uma entrega independente e testável — não avançar para o pró
 - Sinais conflitantes entre texto e imagem (ex. texto indica 18, imagem indica Livre) → regra de composição aplicada de forma determinística (documentar e testar a regra escolhida, ex. "pior caso vence")
 - Severidade exatamente no limite de um threshold → comportamento determinístico (`>=` vs `>` testado explicitamente)
 
-### 2.5 Persistência (SQLite)
+### 2.6 Persistência (SQLite)
 - [ ] Modelo de dados: vídeos, jobs, resultados, cenas sinalizadas, score final
 
 **Cenários de teste:**
@@ -138,7 +186,7 @@ Cada passo é uma entrega independente e testável — não avançar para o pró
 - Consultas retornam dados consistentes com o que foi gravado
 - Escrita concorrente de dois jobs simultâneos não corrompe dados
 
-### 2.6 API de consulta
+### 2.7 API de consulta
 - [ ] Endpoints de status, resultado e timeline para o frontend
 
 **Cenários de teste:**
@@ -147,7 +195,7 @@ Cada passo é uma entrega independente e testável — não avançar para o pró
 - GET resultado antes do job terminar → resposta apropriada (ex. 202/processando), não erro genérico
 - Contrato de resposta estável e testado via schema (evita quebrar o frontend em mudanças futuras)
 
-### 2.7 Fila assíncrona in-process
+### 2.8 Fila assíncrona in-process
 - [ ] Processamento em background sem bloquear o upload
 
 **Cenários de teste:**
