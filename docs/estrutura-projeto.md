@@ -42,7 +42,7 @@ Em vez de uma única invocação que processa o vídeo inteiro de ponta a ponta,
 
 O backend chama os subcomandos como subprocessos independentes: `extract-audio` → `stt`, em paralelo com `snapshots` → `analyze-frames` (áudio e vídeo são trilhas independentes). Cada etapa atualiza o status do job (`extracting_audio`, `running_stt`, `capturing_snapshots`, `analyzing_frames`, `scoring`, `done`), permitindo ao frontend mostrar progresso granular por etapa em vez de um único spinner "processando".
 
-Todos os 4 subcomandos do `video-engine` (incluindo `analyze-frames`) rodam totalmente offline, sem chamada a API externa — os modelos de visão computacional (NudeNet, detector de armas, checkpoint de violência) são embarcados via ONNX Runtime no próprio binário. A **única** chamada a serviço de terceiros de todo o pipeline é a análise semântica de texto (LLM), feita pelo backend (`vidi-patris-core`) diretamente sobre a transcrição gerada pelo `stt` — o `video-engine` nunca acessa rede.
+Todos os 4 subcomandos do `video-engine` (incluindo `analyze-frames`) rodam totalmente offline, sem chamada a API externa — os modelos de visão computacional (NudeNet, detector de armas, checkpoint de violência) são embarcados via ONNX Runtime no próprio binário. A **única** chamada a serviço de terceiros de todo o pipeline é a análise semântica de texto (LLM), feita pelo backend (`vidi-patris-core`) diretamente sobre a transcrição gerada pelo `stt` ou sobre a legenda `.srt` enviada diretamente — o `video-engine` nunca acessa rede.
 
 Esse contrato permite desenvolver os dois repositórios em paralelo desde o início, cada um mockando a saída/entrada do outro.
 
@@ -59,12 +59,13 @@ Detalhamento passo a passo de cada épico nessa ordem, com cenários de teste ma
 ## Épicos — `vidi-patris-core` (backend, Python/FastAPI)
 
 1. Ingestão de vídeo — upload, validação de formato/tamanho, storage local, criação de job.
-2. Orquestração do pipeline — invocar os subcomandos do video-engine (`extract-audio`, `stt`, `snapshots`, `analyze-frames`) na sequência correta, capturar/parsear o JSON de saída de cada etapa, tratar falhas e timeout por etapa, e atualizar o status granular do job.
-3. Integração com LLM de análise semântica — enviar segmentos da transcrição para API de terceiros (free tier/baixo custo), receber categoria/severidade/trecho/timestamp estruturados.
-4. Motor de scoring — combinar sinais de texto (LLM) + sinais de imagem (video-engine) por categoria; aplicar o ruleset Brasil/Classind (severidade → faixa etária).
-5. Persistência — modelo de dados em SQLite (vídeos, jobs, resultados, cenas sinalizadas, score final).
-6. API de consulta — endpoints para o frontend (status do job com granularidade por etapa, resultado do score, timeline).
-7. Processamento assíncrono in-process — fila leve (ex. BackgroundTasks do FastAPI) para não bloquear o upload.
+2. Análise semântica de legendas (SRT) via LLM — enviar os diálogos do `.srt` ingerido para um provedor de IA plugável (Claude / OpenAI / Gemini, escolha por custo), receber categoria/severidade/trecho/timestamp estruturados e catalogar por eixo Classind (Violência, Sexo e Nudez, Drogas, Linguagem).
+3. Orquestração do pipeline — invocar os subcomandos do video-engine (`extract-audio`, `stt`, `snapshots`, `analyze-frames`) na sequência correta, capturar/parsear o JSON de saída de cada etapa, tratar falhas e timeout por etapa, e atualizar o status granular do job.
+4. Integração com LLM de análise semântica — enviar segmentos da transcrição para API de terceiros (free tier/baixo custo), receber categoria/severidade/trecho/timestamp estruturados.
+5. Motor de scoring — combinar sinais de texto (LLM) + sinais de imagem (video-engine) por categoria; aplicar o ruleset Brasil/Classind (severidade → faixa etária).
+6. Persistência — modelo de dados em SQLite (vídeos, jobs, resultados, cenas sinalizadas, score final).
+7. API de consulta — endpoints para o frontend (status do job com granularidade por etapa, resultado do score, timeline).
+8. Processamento assíncrono in-process — fila leve (ex. BackgroundTasks do FastAPI) para não bloquear o upload.
 
 ## Épicos — `vidi-patris-video-engine` (C++)
 
